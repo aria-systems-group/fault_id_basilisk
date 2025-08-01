@@ -1,5 +1,8 @@
 """
 Test if the inertialUKF is setup properly to estimate attitude states (MRP, angularrate)
+NOTE: one can expand this test using other measurements and filters (see bsk codes in src/fswAlgorithms/attDetermination)
+    - src/fswAlgorithms/attDetermination
+        - headingSuKF, okeefeEKF, sunlineSuKF
 """
 
 import os
