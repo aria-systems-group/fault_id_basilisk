@@ -1,5 +1,8 @@
 """
-Test if the inertialUKF is setup properly to estimate attitude states (MRP, angularrate)
+The assert checks if the average chi_sqaure statistics of the true mode is within the confidence bound
+The attitude guidance alternates between sunPointing and earthPointing
+NOTE: How to setup faults such that the inertialUKF statisitics is more different?
+    - Now we reduce the maxMomentum to simulate faults.
 """
 
 import os
@@ -8,17 +11,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+from scipy.stats import chi2
 # The path to the location of Basilisk
 # Used to get the location of supporting data.
 from Basilisk import __path__
 from Basilisk.architecture import messaging
 from Basilisk.fswAlgorithms import (mrpFeedback, attTrackingError,
                                     inertial3D, rwMotorTorque)
-from Basilisk.simulation import reactionWheelStateEffector, simpleNav, spacecraft
+from Basilisk.simulation import reactionWheelStateEffector, simpleNav, spacecraft, ephemerisConverter
 from Basilisk.utilities import (SimulationBaseClass, macros,
                                 orbitalMotion, simIncludeGravBody,
                                 simIncludeRW, unitTestSupport, vizSupport)
 from Basilisk.fswAlgorithms import inertialUKF
+from Basilisk.fswAlgorithms import locationPointing
 
 bskPath = __path__[0]
 fileName = os.path.basename(os.path.splitext(__file__)[0])
@@ -104,6 +109,17 @@ def plot_filter_result_omega(filter_key, timeData, state, state_est, cov_est):
     axs[-1].set_xlabel('Time [min]')
     fig.suptitle("["+filter_key+" filter] result", fontsize=14)
 
+def plot_filter_chisquare(dataChiSquare):
+    p = 0.05      # confidence level
+    dof = 3       # degrees of freedom
+    chi_ub = chi2.ppf(1-0.5*p, dof)
+    chi_lb = chi2.ppf(0.5*p, dof)
+    plt.figure()
+    plt.scatter(np.arange(len(dataChiSquare)), dataChiSquare, color="black", s=10, label=r"$\chi^2$")
+    plt.axhline(y=chi_ub, color='r', linestyle='--', label=r"$\chi^2$ upper threshold")
+    plt.axhline(y=chi_lb, color='b', linestyle='--', label=r"$\chi^2$ lower threshold")
+    plt.legend(loc='upper right')
+
 def plot_rw_cmd_torque(timeData, dataUsReq, numRW):
     """Plot the RW command torques."""
     plt.figure(2)
@@ -149,6 +165,8 @@ def plot_rw_speeds(timeData, dataOmegaRW, numRW):
         plt.plot(timeData, dataOmegaRW[:, idx] / macros.RPM,
                  color=unitTestSupport.getLineColor(idx, numRW),
                  label=r'$\Omega_{' + str(idx) + '}$')
+        # if(idx == 0):
+        #     print(dataOmegaRW[:, idx])
     plt.legend(loc='lower right')
     plt.xlabel('Time [min]')
     plt.ylabel('RW Speed (RPM) ')
@@ -165,8 +183,8 @@ def setup_inertialattfilter(filterObject):
                               0.0, 0.0, 0.0, 0.1, 0.0, 0.0,
                               0.0, 0.0, 0.0, 0.0, 0.1, 0.0,
                               0.0, 0.0, 0.0, 0.0, 0.0, 0.1]
-    sigmaMrpSquare = (1E-3) ** 2
-    sigmaRateSquare = (5E-4) ** 2
+    sigmaMrpSquare = (1E-4) ** 2
+    sigmaRateSquare = (1E-3) ** 2
     qNoise = np.identity(6)
     qNoise[0:3, 0:3] = qNoise[0:3, 0:3]*sigmaMrpSquare
     qNoise[3:6, 3:6] = qNoise[3:6, 3:6]*sigmaRateSquare
@@ -196,11 +214,14 @@ def configure_inertialattfilter(filterObject, config, measurement_message):
     filterObject.STDatasStruct.STMessages[0].stInMsg.subscribeTo(measurement_message)
 
 
-def test_multipleinertialUkf(show_plots=False):
+@pytest.mark.parametrize("true_mode", ["nominal", "fault1", "fault2", "fault3"])
+def test_multipleinertialUkf(true_mode, show_plots=False):
     """
     Args:
+        true_mode (string): the true dynamic mode of the reaction wheels
         show_plots (bool): Determines if the script should display plots
     """
+    np.random.seed(42)
 
     # --- Create Simulation ---
     simTaskName = "simTask"
@@ -208,7 +229,7 @@ def test_multipleinertialUkf(show_plots=False):
     # create a sim module as an empty container
     scSim = SimulationBaseClass.SimBaseClass()
     # set the simulation time variable used later on
-    simTimeSec = 600
+    simTimeSec = 300
     simulationTime = macros.sec2nano(simTimeSec)
     # create the simulation process
     dynProcess = scSim.CreateNewProcess(simProcessName)
@@ -220,10 +241,11 @@ def test_multipleinertialUkf(show_plots=False):
     # --- Setup Gravity ---
     # clear prior gravitational body and SPICE setup definitions
     gravFactory = simIncludeGravBody.gravBodyFactory()
-    # setup Earth Gravity Body
-    earth = gravFactory.createEarth()
-    earth.isCentralBody = True  # ensure this is the central gravitational body
-    mu = earth.mu
+    gravBodies = gravFactory.createBodies('sun', 'earth')
+    gravBodies['earth'].isCentralBody = True
+    mu = gravBodies['earth'].mu
+    sunIdx = 0
+    earthIdx = 1
 
     # --- Create Spacecraft ---
     scObject = spacecraft.Spacecraft()
@@ -258,19 +280,54 @@ def test_multipleinertialUkf(show_plots=False):
     rwFactory = simIncludeRW.rwFactory()
     varRWModel = messaging.BalancedWheels
     # create each RW by specifying the RW type, the spin axis gsHat, plus optional arguments
-    RW1 = rwFactory.create('Honeywell_HR16', [1, 0, 0], maxMomentum=50., Omega=100.  # RPM
-                           , RWModel=varRWModel
-                           )
-    RW2 = rwFactory.create('Honeywell_HR16', [0, 1, 0], maxMomentum=50., Omega=200.  # RPM
-                           , RWModel=varRWModel
-                           )
-    RW3 = rwFactory.create('Honeywell_HR16', [0, 0, 1], maxMomentum=50., Omega=300.  # RPM
-                           , rWB_B=[0.5, 0.5, 0.5]  # meters
-                           , RWModel=varRWModel
-                           )
-    # In this simulation the RW objects RW1, RW2 or RW3 are not modified further.  However, you can over-ride
-    # any values generate in the `.create()` process using for example RW1.Omega_max = 100. to change the
-    # maximum wheel speed.
+    if(true_mode == "nominal"):
+        RW1 = rwFactory.create('Honeywell_HR16', [1, 0, 0], maxMomentum=100., Omega=100.  # RPM
+                                , RWModel=varRWModel
+                                )
+        RW2 = rwFactory.create('Honeywell_HR16', [0, 1, 0], maxMomentum=100., Omega=200.  # RPM
+                                , RWModel=varRWModel
+                            )
+        RW3 = rwFactory.create('Honeywell_HR16', [0, 0, 1], maxMomentum=100., Omega=300.  # RPM
+                                , rWB_B=[0.5, 0.5, 0.5]  # meters
+                                , RWModel=varRWModel
+                            )
+    if(true_mode == "fault1"):
+        RW1 = rwFactory.create('Honeywell_HR16', [1, 0, 0], maxMomentum=50., Omega=100.  # RPM
+                                , RWModel=varRWModel
+                                # , useRWfriction=True
+                                # , fCoulomb = 0.0005*10
+                                # , cViscous = 1e-3    # viscous [N m s]
+                                )
+        RW2 = rwFactory.create('Honeywell_HR16', [0, 1, 0], maxMomentum=100., Omega=200.  # RPM
+                                , RWModel=varRWModel
+                            )
+        RW3 = rwFactory.create('Honeywell_HR16', [0, 0, 1], maxMomentum=100., Omega=300.  # RPM
+                                , rWB_B=[0.5, 0.5, 0.5]  # meters
+                                , RWModel=varRWModel
+                            )
+    if(true_mode == "fault2"):
+        RW1 = rwFactory.create('Honeywell_HR16', [1, 0, 0], maxMomentum=100., Omega=100.  # RPM
+                                , RWModel=varRWModel
+                                )
+        RW2 = rwFactory.create('Honeywell_HR16', [0, 1, 0], maxMomentum=50., Omega=200.  # RPM
+                                , RWModel=varRWModel
+                            )
+        RW3 = rwFactory.create('Honeywell_HR16', [0, 0, 1], maxMomentum=100., Omega=300.  # RPM
+                                , rWB_B=[0.5, 0.5, 0.5]  # meters
+                                , RWModel=varRWModel
+                            )
+    if(true_mode == "fault3"):
+        RW1 = rwFactory.create('Honeywell_HR16', [1, 0, 0], maxMomentum=100., Omega=100.  # RPM
+                                , RWModel=varRWModel
+                                )
+        RW2 = rwFactory.create('Honeywell_HR16', [0, 1, 0], maxMomentum=100., Omega=200.  # RPM
+                                , RWModel=varRWModel
+                            )
+        RW3 = rwFactory.create('Honeywell_HR16', [0, 0, 1], maxMomentum=50., Omega=300.  # RPM
+                                , rWB_B=[0.5, 0.5, 0.5]  # meters
+                                , RWModel=varRWModel
+                            )
+    
     numRW = rwFactory.getNumOfDevices()
 
     # --- Connect Reaction Wheels to Spacecraft via rwStateEffector ---
@@ -287,15 +344,45 @@ def test_multipleinertialUkf(show_plots=False):
     sNavObject = simpleNav.SimpleNav()
     sNavObject.ModelTag = "SimpleNavigation"
     scSim.AddModelToTask(simTaskName, sNavObject)
-    # setup inertial3D guidance module
-    inertial3DObj = inertial3D.inertial3D()
-    inertial3DObj.ModelTag = "inertial3D"
-    scSim.AddModelToTask(simTaskName, inertial3DObj)
-    inertial3DObj.sigma_R0N = [0., 0., 0.]  # set the desired inertial orientation
+
+    # setup SPICE interface for celestial objects
+    timeInitString = "2022 MAY 1 00:28:30.0"
+    spiceObject = gravFactory.createSpiceInterface(time=timeInitString, epochInMsg=True)
+    spiceObject.zeroBase = 'Earth'
+    scSim.AddModelToTask(simTaskName, spiceObject)
+    ephemObject = ephemerisConverter.EphemerisConverter()
+    ephemObject.ModelTag = 'EphemData'
+    ephemObject.addSpiceInputMsg(spiceObject.planetStateOutMsgs[sunIdx])
+    ephemObject.addSpiceInputMsg(spiceObject.planetStateOutMsgs[earthIdx])
+    scSim.AddModelToTask(simTaskName, ephemObject)
+
+    # setup sunPointing guidance module
+    sunPointing = locationPointing.locationPointing()
+    sunPointing.ModelTag = "sunPointing"
+    sunPointing.pHat_B = [0, 0, 1]
+    sunPointing.useBoresightRateDamping = 1
+    sunPointing.celBodyInMsg.subscribeTo(ephemObject.ephemOutMsgs[sunIdx])
+    sunPointing.scTransInMsg.subscribeTo(sNavObject.transOutMsg)
+    sunPointing.scAttInMsg.subscribeTo(sNavObject.attOutMsg)
+    scSim.AddModelToTask(simTaskName, sunPointing)
+
+    # setup earthPointing guidance module
+    earthPointing = locationPointing.locationPointing()
+    earthPointing.ModelTag = "earthPointing"
+    earthPointing.pHat_B = [0, 0, 1]
+    earthPointing.useBoresightRateDamping = 1
+    earthPointing.celBodyInMsg.subscribeTo(ephemObject.ephemOutMsgs[earthIdx])
+    earthPointing.scTransInMsg.subscribeTo(sNavObject.transOutMsg)
+    earthPointing.scAttInMsg.subscribeTo(sNavObject.attOutMsg)
+    scSim.AddModelToTask(simTaskName, earthPointing)
+
     # setup the attitude tracking error evaluation module
     attError = attTrackingError.attTrackingError()
     attError.ModelTag = "attErrorInertial3D"
     scSim.AddModelToTask(simTaskName, attError)
+    attError.attRefInMsg.subscribeTo(earthPointing.attRefOutMsg)
+    attError.attNavInMsg.subscribeTo(sNavObject.attOutMsg)
+    
     # setup the MRP Feedback control module
     mrpControl = mrpFeedback.mrpFeedback()
     mrpControl.ModelTag = "mrpFeedback"
@@ -312,18 +399,16 @@ def test_multipleinertialUkf(show_plots=False):
     vcMsg = messaging.VehicleConfigMsg().write(vehicleConfigOut)
     # create the FSW reaction wheel configuration message
     fswRwParamMsg = rwFactory.getConfigMessage()
-    # create the inertialUKF reaction wheel configuration message
-    inertialAttFilterRwParamMsg = rwFactory.getConfigMessage()
+    
     # connect navigation to spacecraft
     sNavObject.scStateInMsg.subscribeTo(scObject.scStateOutMsg)
-    # connect att control error
-    attError.attNavInMsg.subscribeTo(sNavObject.attOutMsg)
-    attError.attRefInMsg.subscribeTo(inertial3DObj.attRefOutMsg)
+    
     # connect mrp control law
     mrpControl.guidInMsg.subscribeTo(attError.attGuidOutMsg)
     mrpControl.vehConfigInMsg.subscribeTo(vcMsg)
     mrpControl.rwParamsInMsg.subscribeTo(fswRwParamMsg)
     mrpControl.rwSpeedsInMsg.subscribeTo(rwStateEffector.rwSpeedOutMsg)
+    
     # create and connect RW motor torqe
     rwMotorTorqueObj = rwMotorTorque.rwMotorTorque()
     rwMotorTorqueObj.ModelTag = "rwMotorTorque"
@@ -352,21 +437,35 @@ def test_multipleinertialUkf(show_plots=False):
     gyroInMsg = messaging.AccDataMsg()
     gyroInMsg.write(gyroBufferData, 0)
 
-    numDataPoints = 100
-    samplingTime = unitTestSupport.samplingTime(simulationTime, simulationTimeStep, numDataPoints)
+    # numDataPoints = 2000
+    # samplingTime = unitTestSupport.samplingTime(simulationTime, simulationTimeStep, numDataPoints)
+    samplingTime = simulationTimeStep
+    # samplingTime = macros.sec2nano(0.1)
 
     # 0: nominal filter
     inertialAttFilter = inertialUKF.inertialUKF()
     scSim.AddModelToTask(simTaskName, inertialAttFilter)
+    rwFactory_nom = simIncludeRW.rwFactory()
+    # create each RW by specifying the RW type, the spin axis gsHat, plus optional arguments
+    rwFactory_nom.create('Honeywell_HR16', [1, 0, 0], maxMomentum=100., Omega=100.  # RPM
+                           , RWModel=varRWModel, 
+                           )
+    rwFactory_nom.create('Honeywell_HR16', [0, 1, 0], maxMomentum=100., Omega=200.  # RPM
+                           , RWModel=varRWModel
+                           )
+    rwFactory_nom.create('Honeywell_HR16', [0, 0, 1], maxMomentum=100., Omega=300.  # RPM
+                           , rWB_B=[0.5, 0.5, 0.5]  # meters
+                           , RWModel=varRWModel,
+                           )
     config = {
         "vcMsg": vcMsg,
         "rwStateEffector": rwStateEffector, 
-        "inertialAttFilterRwParamMsg": inertialAttFilterRwParamMsg, 
+        "inertialAttFilterRwParamMsg": rwFactory_nom.getConfigMessage(),
         "gyroInMsg": gyroInMsg,
         "st_cov": st_cov,
     }
     configure_inertialattfilter(inertialAttFilter, config, attitude_measurement_msg)
-    inertialAttFilterLog = inertialAttFilter.logger(["covar", "state"], samplingTime)
+    inertialAttFilterLog = inertialAttFilter.logger(["covar", "state", "cov_S", "innovation"], samplingTime)
     scSim.AddModelToTask(simTaskName, inertialAttFilterLog)
 
     # 1: fault1 filter
@@ -374,17 +473,17 @@ def test_multipleinertialUkf(show_plots=False):
     scSim.AddModelToTask(simTaskName, inertialAttFilter1)
     rwFactory_fault1 = simIncludeRW.rwFactory()
     # create each RW by specifying the RW type, the spin axis gsHat, plus optional arguments
-    rwFactory_fault1.create('Honeywell_HR16', [1, 0, 0], maxMomentum=50., Omega=100.  # RPM
-                           , RWModel=varRWModel, 
-                           Omega_max = 3000.0*macros.RPM # the default Honeywell_HR16 has 6000.0*macros.RPM
-                           )
-    rwFactory_fault1.create('Honeywell_HR16', [0, 1, 0], maxMomentum=50., Omega=200.  # RPM
+    RW1_fault1 = rwFactory_fault1.create('Honeywell_HR16', [1, 0, 0], maxMomentum=50., Omega=100.  # RPM
                            , RWModel=varRWModel
                            )
-    rwFactory_fault1.create('Honeywell_HR16', [0, 0, 1], maxMomentum=50., Omega=300.  # RPM
-                           , rWB_B=[0.5, 0.5, 0.5]  # meters
-                           , RWModel=varRWModel,
+    rwFactory_fault1.create('Honeywell_HR16', [0, 1, 0], maxMomentum=100., Omega=200.  # RPM
+                           , RWModel=varRWModel
                            )
+    rwFactory_fault1.create('Honeywell_HR16', [0, 0, 1], maxMomentum=100., Omega=300.  # RPM
+                           , rWB_B=[0.5, 0.5, 0.5]  # meters
+                           , RWModel=varRWModel
+                           )
+    print(RW1.Js, RW1_fault1.Js, RW2.Js)
     config1 = {
         "vcMsg": vcMsg,
         "rwStateEffector": rwStateEffector, 
@@ -393,7 +492,7 @@ def test_multipleinertialUkf(show_plots=False):
         "st_cov": st_cov,
     }
     configure_inertialattfilter(inertialAttFilter1, config1, attitude_measurement_msg)
-    inertialAttFilter1Log = inertialAttFilter1.logger(["covar", "state"], samplingTime)
+    inertialAttFilter1Log = inertialAttFilter1.logger(["covar", "state", "cov_S", "innovation"], samplingTime)
     scSim.AddModelToTask(simTaskName, inertialAttFilter1Log)
 
     # 2: fault2 filter
@@ -401,14 +500,13 @@ def test_multipleinertialUkf(show_plots=False):
     scSim.AddModelToTask(simTaskName, inertialAttFilter2)
     rwFactory_fault2 = simIncludeRW.rwFactory()
     # create each RW by specifying the RW type, the spin axis gsHat, plus optional arguments
-    rwFactory_fault2.create('Honeywell_HR16', [1, 0, 0], maxMomentum=50., Omega=100.  # RPM
+    rwFactory_fault2.create('Honeywell_HR16', [1, 0, 0], maxMomentum=100., Omega=100.  # RPM
                            , RWModel=varRWModel, 
                            )
-    rwFactory_fault2.create('Honeywell_HR16', [0, 1, 0], maxMomentum=50., Omega=200.  # RPM
+    RW2_fault2 = rwFactory_fault2.create('Honeywell_HR16', [0, 1, 0], maxMomentum=50., Omega=200.  # RPM
                            , RWModel=varRWModel,
-                           Omega_max = 3000.0*macros.RPM # the default Honeywell_HR16 has 6000.0*macros.RPM
                            )
-    rwFactory_fault2.create('Honeywell_HR16', [0, 0, 1], maxMomentum=50., Omega=300.  # RPM
+    rwFactory_fault2.create('Honeywell_HR16', [0, 0, 1], maxMomentum=100., Omega=300.  # RPM
                            , rWB_B=[0.5, 0.5, 0.5]  # meters
                            , RWModel=varRWModel,
                            )
@@ -420,7 +518,7 @@ def test_multipleinertialUkf(show_plots=False):
         "st_cov": st_cov,
     }
     configure_inertialattfilter(inertialAttFilter2, config2, attitude_measurement_msg)
-    inertialAttFilter2Log = inertialAttFilter2.logger(["covar", "state"], samplingTime)
+    inertialAttFilter2Log = inertialAttFilter2.logger(["covar", "state", "cov_S", "innovation"], samplingTime)
     scSim.AddModelToTask(simTaskName, inertialAttFilter2Log)
 
     # 3: fault3 filter
@@ -428,16 +526,15 @@ def test_multipleinertialUkf(show_plots=False):
     scSim.AddModelToTask(simTaskName, inertialAttFilter3)
     rwFactory_fault3 = simIncludeRW.rwFactory()
     # create each RW by specifying the RW type, the spin axis gsHat, plus optional arguments
-    rwFactory_fault3.create('Honeywell_HR16', [1, 0, 0], maxMomentum=50., Omega=100.  # RPM
+    rwFactory_fault3.create('Honeywell_HR16', [1, 0, 0], maxMomentum=100., Omega=100.  # RPM
                            , RWModel=varRWModel, 
                            )
-    rwFactory_fault3.create('Honeywell_HR16', [0, 1, 0], maxMomentum=50., Omega=200.  # RPM
+    rwFactory_fault3.create('Honeywell_HR16', [0, 1, 0], maxMomentum=100., Omega=200.  # RPM
                            , RWModel=varRWModel,
                            )
-    rwFactory_fault3.create('Honeywell_HR16', [0, 0, 1], maxMomentum=50., Omega=300.  # RPM
+    RW3_fault3 = rwFactory_fault3.create('Honeywell_HR16', [0, 0, 1], maxMomentum=50., Omega=300.  # RPM
                            , rWB_B=[0.5, 0.5, 0.5]  # meters
                            , RWModel=varRWModel,
-                           Omega_max = 3000.0*macros.RPM # the default Honeywell_HR16 has 6000.0*macros.RPM
                            )
     config3 = {
         "vcMsg": vcMsg,
@@ -447,7 +544,7 @@ def test_multipleinertialUkf(show_plots=False):
         "st_cov": st_cov,
     }
     configure_inertialattfilter(inertialAttFilter3, config3, attitude_measurement_msg)
-    inertialAttFilter3Log = inertialAttFilter3.logger(["covar", "state"], samplingTime)
+    inertialAttFilter3Log = inertialAttFilter3.logger(["covar", "state", "cov_S", "innovation"], samplingTime)
     scSim.AddModelToTask(simTaskName, inertialAttFilter3Log)
 
     # collect filter log
@@ -481,10 +578,10 @@ def test_multipleinertialUkf(show_plots=False):
         scSim.AddModelToTask(simTaskName, rwLogs[item])
 
     # --- Setup 3D Visualiztion
-    # viz = vizSupport.enableUnityVisualization(scSim, simTaskName, scObject
-    #                                           , saveFile=fileName
-    #                                           , rwEffectorList=rwStateEffector
-    #                                           )
+    viz = vizSupport.enableUnityVisualization(scSim, simTaskName, scObject
+                                              , saveFile=fileName
+                                              , rwEffectorList=rwStateEffector
+                                              )
 
     # --- Initialize Simulation ---
     scSim.InitializeSimulation()
@@ -492,6 +589,8 @@ def test_multipleinertialUkf(show_plots=False):
 
     # --- Run Simulation ---
     for i in range(len(timeSpan)-1):
+        if(timeSpan[i]) > 150.0:
+            attError.attRefInMsg.subscribeTo(sunPointing.attRefOutMsg)
         # propagate to next time
         scSim.ConfigureStopTime(macros.sec2nano((timeSpan[i+1])))
         scSim.ExecuteSimulation()
@@ -521,20 +620,27 @@ def test_multipleinertialUkf(show_plots=False):
     timeData = rwMotorLog.times() * macros.NANO2MIN
     plt.close("all")  # clears out plots from earlier test runs
 
-    # plot_attitude_error(timeData, dataSigmaBR)
+    plot_attitude_error(timeData, dataSigmaBR)
 
-    # plot_rate_error(timeData, dataOmegaBR)
+    plot_rate_error(timeData, dataOmegaBR)
 
-    # plot_rw_motor_torque(timeData, dataUsReq, dataRW, numRW)
+    plot_rw_motor_torque(timeData, dataUsReq, dataRW, numRW)
 
-    # plot_rw_speeds(timeData, dataOmegaRW, numRW)
+    plot_rw_speeds(timeData, dataOmegaRW, numRW)
 
     # show all filter results
+    chi_square_dict = {}
+    p = 0.05      # confidence level
+    dof = 3       # degrees of freedom
+    chi_ub = chi2.ppf(1-0.5*p, dof)
+    chi_lb = chi2.ppf(0.5*p, dof)
     for key, filterlog in inertialAttFilterLog_dict.items():
         dataFilterState = filterlog.state
         dataFilterCov = filterlog.covar
         dataFilterSigmaBN = dataFilterState[:, 0:3]
         dataFilterOmegaBN = dataFilterState[:, 3:]
+        dataFilterCov_S = filterlog.cov_S
+        dataFilterInno = filterlog.innovation
         # assert equalt shape of the true and filter estimated states
         np.testing.assert_equal(dataSigmaBN.shape, dataFilterSigmaBN.shape)
         _tmp = dataFilterCov.reshape(-1, 6, 6)
@@ -542,14 +648,26 @@ def test_multipleinertialUkf(show_plots=False):
                                             axis1=1, axis2=2)[:, :3]
         dataFilterOmegaDiagCov = np.diagonal(_tmp, 
                                             axis1=1, axis2=2)[:, 3:]
-        if(key == "nominal"): # assuming the true hypothesis is the nominal dynamics
-            # assert the filter estimated states are within 6 standard deviations
-            np.testing.assert_array_less(np.abs(dataSigmaBN-dataFilterSigmaBN)[-10:, :], 
-                                        6*np.sqrt(dataFilterSigmaDiagCov)[-10:, :])
-            np.testing.assert_array_less(np.abs(dataOmegaBN-dataFilterOmegaBN)[-10:, :], 
-                                        6*np.sqrt(dataFilterOmegaDiagCov)[-10:, :])
-        plot_filter_result_sigma(key, timeData, dataSigmaBN, dataFilterSigmaBN, dataFilterSigmaDiagCov)
-        plot_filter_result_omega(key, timeData, dataOmegaBN, dataFilterOmegaBN, dataFilterOmegaDiagCov)
+        # plot_filter_result_sigma(key, timeData, dataSigmaBN, dataFilterSigmaBN, dataFilterSigmaDiagCov)
+        # plot_filter_result_omega(key, timeData, dataOmegaBN, dataFilterOmegaBN, dataFilterOmegaDiagCov)
+        threshold = 1e12  # condition number threshold; adjust as needed
+        dataChiSquare = []
+        for i in range(dataFilterInno.shape[0]):
+            cov_i = dataFilterCov_S[i, :].reshape(3, 3)
+            cond = np.linalg.cond(cov_i)
+            if cond < threshold:
+                mahalanobis = dataFilterInno[i, :].T @ np.linalg.inv(cov_i) @ dataFilterInno[i, :]
+                # print(mahalanobis)
+                dataChiSquare.append(mahalanobis)
+            # else:
+            #     print(f"[warning] Skipped index {i} due to singular matrix (cond={cond:.2e})")
+        dataChiSquare = np.array(dataChiSquare)
+        chi_square_dict[key] = np.mean(dataChiSquare)
+        plot_filter_chisquare(dataChiSquare)
+    # for key, filterlog in inertialAttFilterLog_dict.items():
+    #     print(np.mean(chi_square_dict[key]))
+    np.testing.assert_array_less(chi_square_dict[true_mode], chi_ub)
+    np.testing.assert_array_less(chi_lb, chi_square_dict[true_mode])
 
     if show_plots:
         plt.show()
@@ -560,5 +678,9 @@ def test_multipleinertialUkf(show_plots=False):
 
 if __name__ == "__main__":
     test_multipleinertialUkf(
+        "nominal",
+        # "fault1",
+        # "fault2",
+        # "fault3",
         show_plots=True,  # show_plots
     )
