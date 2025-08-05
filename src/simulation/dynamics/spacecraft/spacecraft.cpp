@@ -624,3 +624,12 @@ void Spacecraft::calcForceTorqueFromStateEffectors(double time, Eigen::Vector3d 
         (*it)->calcForceTorqueOnBody(time, omega_BN_B);
     }
 }
+
+void Spacecraft::setSigmaBN(Eigen::MRPd sigma_BN){
+    this->hubSigma->setState(eigenMRPd2Vector3d(sigma_BN));
+}
+
+void Spacecraft::setOmegaBN_B(Eigen::Vector3d omega_BN_B){
+    this->hubOmega_BN_B->setState(omega_BN_B);
+}
+

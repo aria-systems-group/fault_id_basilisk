@@ -88,9 +88,10 @@ public:
     void addDynamicEffector(DynamicEffector *newDynamicEffector);  //!< Attaches a dynamicEffector
     void preIntegration(uint64_t callTimeNanos) final;       //!< method to perform pre-integration steps
     void postIntegration(uint64_t callTimeNanos) final;      //!< method to perform post-integration steps
+    void setSigmaBN(Eigen::MRPd sigma_BN); 
+    void setOmegaBN_B(Eigen::Vector3d omega_BN_B); 
 
 private:
-
     template <typename Type>
     /** Assign the state engine state and parameter names to an effector */
     void assignStateParamNames(Type effector) {
