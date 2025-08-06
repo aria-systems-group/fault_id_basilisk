@@ -1,8 +1,8 @@
 """
-Test if one can use many native forward simulation of BSK to construct UKF.
-NOTE: I am not quite sure ...
-    - If the UKF simulations do not use the feedback law as the true S/C --> the UKF still works, which is not expected.
-    - There is something wrong when combining the forward simulation into UKF estimates.
+Test if one can use many native forward Basilisk (BSK) simulation to construct UKF - native inertialUKF.
+NOTE: for each UKF corresponding to a fault hypothesis, 2*nx+1 number of BSK satellites need to be simulated, in order to simulate the sigma points
+Below, we test for two hypothesis {0: nominal, 1: faulty RW}
+The goal is to check if the average chi-square statistics is smaller when the UKF is using the same dynamic as the true.
 """
 
 import os
