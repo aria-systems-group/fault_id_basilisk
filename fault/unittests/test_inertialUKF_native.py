@@ -3,6 +3,10 @@ Test if one can use many native forward Basilisk (BSK) simulation to construct U
 NOTE: for each UKF corresponding to a fault hypothesis, 2*nx+1 number of BSK satellites need to be simulated, in order to simulate the sigma points
 Below, we test for two hypothesis {0: nominal, 1: faulty RW}
 The goal is to check if the average chi-square statistics is smaller when the UKF is using the same dynamic as the true.
+The fault is injected by adding a viscous friction to the RW1
+    - see src/simulation/dynamics/reactionwheels/reactionWheelStateEffector for details of this parameter
+NOTE: rebuild basilisk since the spacecraft source code is modified.
+In brief, the native UKF has the ability to distinguish between nominal and faulty (increases friction) RW.
 """
 
 import os
@@ -66,6 +70,18 @@ def plot_filter_result(txt, timeData, state, state_est, cov_est, y_meas=None):
 
     # Common x‑label on the bottom subplot
     axs[-1].set_xlabel('Time [min]')
+
+
+def plot_attitude_error(timeData, dataSigmaBR):
+    """Plot the attitude errors."""
+    plt.figure()
+    for idx in range(3):
+        plt.plot(timeData, dataSigmaBR[:, idx],
+                 color=unitTestSupport.getLineColor(idx, 3),
+                 label=r'$\sigma_' + str(idx) + '$')
+    plt.legend(loc='lower right')
+    plt.xlabel('Time [min]')
+    plt.ylabel(r'Attitude Error $\sigma_{B/R}$')
 
 
 def dict_lists_to_arrays(d: dict) -> dict:
@@ -162,7 +178,7 @@ def run_inertialUKF_native(true_Hypo=0, filter_Hypo=0, show_plots=False):
     Demonstrate UT-prediction: spawn clones for each sigma point,
     propagate them one step, then reconstruct predicted mean & covariance.
     """
-    np.random.seed(42)
+    np.random.seed(0)
 
     # Simulation parameters
     dt_sec      = 1.
@@ -232,9 +248,11 @@ def run_inertialUKF_native(true_Hypo=0, filter_Hypo=0, show_plots=False):
     rwFactory = simIncludeRW.rwFactory()
     varRWModel = messaging.BalancedWheels
     if(true_Hypo == 0):
-        RW1 = rwFactory.create('Honeywell_HR16', [1,0,0], maxMomentum=100., Omega=100., RWModel=varRWModel, useMaxTorque=True)
+        RW1 = rwFactory.create('Honeywell_HR16', [1,0,0], maxMomentum=100., Omega=100., RWModel=varRWModel, useMaxTorque=True, useRWfriction=True)
     else:
-        RW1 = rwFactory.create('Honeywell_HR16', [1,0,0], maxMomentum=100., Omega=100., Omega_max=500., RWModel=varRWModel, useMaxTorque=True)
+        RW1 = rwFactory.create('Honeywell_HR16', [1,0,0], maxMomentum=100., Omega=100., RWModel=varRWModel, useMaxTorque=True, useRWfriction=True)
+        RW1.cViscous = 1e-3
+    print("true RW cViscous friction:", RW1.cViscous)
     RW2 = rwFactory.create('Honeywell_HR16', [0,1,0], maxMomentum=100., Omega=200., RWModel=varRWModel, useMaxTorque=True)
     RW3 = rwFactory.create('Honeywell_HR16', [0,0,1], maxMomentum=100., Omega=300., rWB_B=[0.5,0.5,0.5], RWModel=varRWModel, useMaxTorque=True)
     RW1.Omega_max = RW2.Omega_max
@@ -256,6 +274,8 @@ def run_inertialUKF_native(true_Hypo=0, filter_Hypo=0, show_plots=False):
     attError = attTrackingError.attTrackingError()
     attError.ModelTag = "attErrorInertial3D"
     sim.AddModelToTask("task", attError)
+    attErrorLog = attError.attGuidOutMsg.recorder()
+    sim.AddModelToTask("task", attErrorLog)
     # setup the MRP Feedback control module
     mrpControl = mrpFeedback.mrpFeedback()
     mrpControl.ModelTag = "mrpFeedback"
@@ -329,9 +349,12 @@ def run_inertialUKF_native(true_Hypo=0, filter_Hypo=0, show_plots=False):
         rw_factory_i = simIncludeRW.rwFactory()
         rw_model_i   = messaging.BalancedWheels
         if(filter_Hypo == 0):
-            rw1_i =rw_factory_i.create('Honeywell_HR16', [1,0,0], maxMomentum=100., Omega=100., RWModel=rw_model_i, useMaxTorque=True)
+            rw1_i =rw_factory_i.create('Honeywell_HR16', [1,0,0], maxMomentum=100., Omega=100., RWModel=rw_model_i, useMaxTorque=True, useRWfriction=True)
         else:
-            rw1_i =rw_factory_i.create('Honeywell_HR16', [1,0,0], maxMomentum=100., Omega=100., RWModel=rw_model_i, Omega_max=500., useMaxTorque=True)
+            rw1_i =rw_factory_i.create('Honeywell_HR16', [1,0,0], maxMomentum=100., Omega=100., RWModel=rw_model_i, useMaxTorque=True, useRWfriction=True)
+            rw1_i.cViscous = 1e-3
+        if(i == 0):
+            print("filter rw cViscous friction: ", rw1_i.cViscous)
         rw2_i = rw_factory_i.create('Honeywell_HR16', [0,1,0], maxMomentum=100., Omega=200., RWModel=rw_model_i, useMaxTorque=True)
         rw_factory_i.create('Honeywell_HR16', [0,0,1], maxMomentum=100., Omega=300., rWB_B=[0.5,0.5,0.5], RWModel=rw_model_i, useMaxTorque=True)
         rw1_i.Omega_max = rw2_i.Omega_max
@@ -423,7 +446,7 @@ def run_inertialUKF_native(true_Hypo=0, filter_Hypo=0, show_plots=False):
         if(ytrue is not None):
             Measure["y"].append(ytrue)
             # print("x_est:", " ".join("{:.1f}".format(v) for v in x_est))
-            # Do UKF (See test_sigma_point_forward_propagation)
+            # Do UKF
             x_est, P_est, inno, S = get_ukf_estimates(ytrue, sigma_pts, scLogList, Wm, Wc, n_sigma, Q, R)
             UKF_result["timeNanos"].append(macros.sec2nano(current_time))
             UKF_result["x_est"].append(x_est)
@@ -478,7 +501,11 @@ def run_inertialUKF_native(true_Hypo=0, filter_Hypo=0, show_plots=False):
     dataChiSquare = np.array(dataChiSquare)
     valid = dataChiSquare[~np.isnan(dataChiSquare)]
     mean = valid.mean()
-    print("chi-square avg [under true hypo {:2d} and filter hypo {:2d}]: {:.4f}".format(true_Hypo, filter_Hypo, mean))
+    print("chi-square avg [under true hypo {:2d} and filter hypo {:2d}]: {:.5f}".format(true_Hypo, filter_Hypo, mean))
+
+    # --- Attitude Error ---
+    dataSigmaBR = attErrorLog.sigma_BR
+    plot_attitude_error(timeData, dataSigmaBR)
 
     if(show_plots):
         plt.show()
@@ -513,6 +540,8 @@ def test_inertialUKF_native_statistics():
 
 
 if __name__ == "__main__":
-    _ = run_inertialUKF_native(show_plots=True)
+    # _ = run_inertialUKF_native(show_plots=True)
+
+    _ = run_inertialUKF_native(true_Hypo=1, filter_Hypo=1, show_plots=True)
 
     test_inertialUKF_native_statistics()
