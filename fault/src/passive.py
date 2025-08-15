@@ -64,7 +64,7 @@ def passive_fault_id(inertialAttFilterLog_dict, moving_window, alpha=0.05, crit=
             logits = np.zeros(n_hypo)
             for idx in range(n_hypo):
                 chi_square = data_chi_square[:, idx]
-                chi_square_avg = np.mean(chi_square)
+                chi_square_avg = safe_mean(chi_square)
                 if(chi_square_avg > chi_crit_up or chi_square_avg < chi_crit_lo or np.isnan(chi_square_avg)):
                     logits[idx] = -np.inf # rejection
                 else:
@@ -127,3 +127,10 @@ def softmax_with_inf_mask(logits: np.ndarray) -> np.ndarray:
         probs[valid] = exps / denom
 
     return probs
+
+
+def safe_mean(x):
+    x = np.asanyarray(x)
+    if np.all(np.isnan(x)):
+        return np.nan
+    return np.nanmean(x)
