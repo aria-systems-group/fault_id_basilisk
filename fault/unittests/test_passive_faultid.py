@@ -39,10 +39,18 @@ def _test_fault_identification_with_seed(moving_window, show_plots=False):
 
     # Setup spacecraft and simulation module
     (scSim, scObject,simTaskName, simTimeSec, simTimeStepSec, simulationTime, simulationTimeStep,
-        varRWModel, rwFactory, rwStateEffector, numRW, I) = setup_spacecraft_sim()
+        varRWModel, rwFactory, rwStateEffector, numRW, I) = setup_spacecraft_sim(true_mode = 0)
+    
+    # Sanity checks to catch this early next time
+    assert isinstance(simTaskName, str), f"Expected task name str, got {type(simTaskName)}"
+    assert hasattr(scObject, "ModelTag"), f"Expected Spacecraft, got {type(scObject)}"
+
+    exit()
 
     # Setup navigation module
     sNavObject, inertial3DObj, attError, mrpControl = setup_navigation_and_control(scSim, simTaskName)
+
+    exit()
 
     # Connect messages
     vcMsg, inertialAttFilterRwParamMsg, attitude_measurement_msg, st_cov, rwMotorTorqueObj, st_1_data \

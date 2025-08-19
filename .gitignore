@@ -63,3 +63,7 @@ build/
 
 # Matlab
 *.mat
+*.asv
+
+# H5 files
+*.h5

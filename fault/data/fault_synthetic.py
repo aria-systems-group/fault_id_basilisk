@@ -21,24 +21,20 @@ from utils.messages import setup_messages
 from utils.log import setup_logging, process_filter
 
 # ---------------------------
-# NEW: Healthy RW dataset generator (no faults)
+# Faulty RW dataset generator (RW1 RPM reduced after 1 hour)
 # ---------------------------
-def run_healthy_rw_dataset(
-    out_path="healthy_rw_run.h5",
+def run_faulty_rw_dataset(
+    out_path="faulty_rw_run.h5",
     sample_rate_hz=1,
     duration_hours=12,
-    seed: int = 0
+    fault_time_hours=1,  # fault occurs after 1 hour
+    seed: int = 42
 ):
-    """
-    Generates a reaction-wheels HEALTHY dataset (no faults) at 1 Hz for 12 hours in HDF5.
-    Synchronized timestamps + N-dim fault-label vector (N=3 for RW1/RW2/RW3), all zeros.
-    """
-    # --- Set seed for reproducibility ---
-    np.random.seed(42)  
+    np.random.seed(seed)  
 
     # Setup spacecraft and simulation module
-    (scSim, scObject,simTaskName, simTimeSec, simTimeStepSec, simulationTime, simulationTimeStep,
-        varRWModel, rwFactory, rwStateEffector, numRW, I) = setup_spacecraft_sim(true_mode=0)
+    (scSim, scObject, simTaskName, simTimeSec, simTimeStepSec, simulationTime, simulationTimeStep,
+     varRWModel, rwFactory, rwStateEffector, numRW, I) = setup_spacecraft_sim(true_mode=0)
 
     # Setup navigation module
     sNavObject, inertial3DObj, attError, mrpControl = setup_navigation_and_control(scSim, simTaskName)
@@ -51,7 +47,6 @@ def run_healthy_rw_dataset(
     rwMotorTorqueObj.rwParamsInMsg.subscribeTo(fswRwParamMsg)
 
     # --- Create multiple inertialUKF (state = MRP, angular_rate) ---
-    # create an empty gyro measurement
     gyroBufferData = messaging.AccDataMsgPayload()
     gyroInMsg = messaging.AccDataMsg()
     gyroInMsg.write(gyroBufferData, 0)
@@ -59,25 +54,16 @@ def run_healthy_rw_dataset(
     numDataPoints = 100
     samplingTime = unitTestSupport.samplingTime(simulationTime, simulationTimeStep, numDataPoints)
 
-    # 0: nominal filter
     inertialAttFilter0 = inertialUKF.inertialUKF()
     scSim.AddModelToTask(simTaskName, inertialAttFilter0)
     rwFactory_0 = simIncludeRW.rwFactory()
-    # create each RW by specifying the RW type, the spin axis gsHat, plus optional arguments
-    rwFactory_0.create('Honeywell_HR16', [1, 0, 0], maxMomentum=50., Omega=100.  # RPM
-                           , RWModel=varRWModel, 
-                           )
-    rwFactory_0.create('Honeywell_HR16', [0, 1, 0], maxMomentum=50., Omega=200.  # RPM
-                           , RWModel=varRWModel
-                           )
-    rwFactory_0.create('Honeywell_HR16', [0, 0, 1], maxMomentum=50., Omega=300.  # RPM
-                           , rWB_B=[0.5, 0.5, 0.5]  # meters
-                           , RWModel=varRWModel,
-                           )
+    rwFactory_0.create('Honeywell_HR16', [1, 0, 0], maxMomentum=50., Omega=100., RWModel=varRWModel)
+    rwFactory_0.create('Honeywell_HR16', [0, 1, 0], maxMomentum=50., Omega=200., RWModel=varRWModel)
+    rwFactory_0.create('Honeywell_HR16', [0, 0, 1], maxMomentum=50., Omega=300., rWB_B=[0.5, 0.5, 0.5], RWModel=varRWModel)
     config0 = {
         "vcMsg": vcMsg,
-        "rwStateEffector": rwStateEffector, 
-        "inertialAttFilterRwParamMsg": rwFactory_0.getConfigMessage(), 
+        "rwStateEffector": rwStateEffector,
+        "inertialAttFilterRwParamMsg": rwFactory_0.getConfigMessage(),
         "gyroInMsg": gyroInMsg,
         "st_cov": st_cov,
     }
@@ -85,8 +71,8 @@ def run_healthy_rw_dataset(
     inertialAttFilter0Log = inertialAttFilter0.logger(["covar", "state", "cov_S", "innovation"], samplingTime)
     scSim.AddModelToTask(simTaskName, inertialAttFilter0Log)
 
-     # Setup logs
-    snAttLog, rwLogs = setup_logging(scSim, simTaskName, samplingTime, rwMotorTorqueObj, 
+    # Setup logs
+    snAttLog, rwLogs = setup_logging(scSim, simTaskName, samplingTime, rwMotorTorqueObj,
                                      attError, sNavObject, rwStateEffector, numRW)
 
     # --- Simulation duration and sampling ---
@@ -107,6 +93,11 @@ def run_healthy_rw_dataset(
 
     # --- Run Simulation with 1Hz samples ---
     for t in timeSpan[1:]:
+        # Inject fault after 1 hour
+        if t >= fault_time_hours * 3600.0:
+            first_rw_id = list(rwFactory.rwList.keys())[0]  # get the first RW ID
+            rwFactory.rwList[first_rw_id].Omega /= 2.0
+
         scSim.ConfigureStopTime(macros.sec2nano(t))
         scSim.ExecuteSimulation()
 
@@ -118,8 +109,8 @@ def run_healthy_rw_dataset(
             st_1_data.timeTag = int(t * 1E9)
             st_1_data.MRP_BdyInrtl = true_att_with_noise
             attitude_measurement_msg.write(st_1_data, int(t * 1E9))
-        
-         # --- Log true attitude and body rates manually ---
+
+        # --- Log true attitude and body rates manually ---
         att_snapshot = snAttLog.sigma_BN[-1, :]          # MRP vector
         rate_snapshot = snAttLog.omega_BN_B[-1, :]       # body rates
         att_log.append(att_snapshot)
@@ -139,8 +130,9 @@ def run_healthy_rw_dataset(
     # --- Collect data for HDF5 ---
     timestamps = timeSpan[1:]  # seconds, aligned with sample rate
 
-    # Fault label vector: all zeros for healthy run
+    # Fault label vector: 0 before fault, 1 after fault
     fault_labels = np.zeros((len(timestamps), numRW), dtype=np.uint8)
+    fault_labels[timestamps >= fault_time_hours * 3600.0, 0] = 1  # RW1 fault
 
     # --- After the loop, convert to numpy arrays ---
     sensors["attitude_mrp"] = np.array(att_log)
@@ -149,9 +141,9 @@ def run_healthy_rw_dataset(
     sensors["rw_motor_torque_Nm"] = np.array(rw_torque_log)       # shape: (timesteps, numRW)
 
     # --- Save to HDF5 ---
-    os.makedirs(os.path.dirname("healthy_rw_run.h5") or ".", exist_ok=True)
-    with h5py.File("healthy_rw_run.h5", "w") as f:
-        f.attrs["description"] = "Healthy reaction wheel dataset (no faults)"
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with h5py.File(out_path, "w") as f:
+        f.attrs["description"] = "Faulty reaction wheel dataset: RW1 RPM halved after 1 hour"
         f.attrs["sample_rate_hz"] = sample_rate_hz
         f.attrs["duration_hours"] = duration_hours
         f.create_dataset("time_s", data=timestamps)
@@ -161,14 +153,14 @@ def run_healthy_rw_dataset(
         for k, v in sensors.items():
             g.create_dataset(k, data=v)
 
-    print(f"[OK] Saved healthy dataset to 'healthy_rw_run.h5'")
-
+    print(f"[OK] Saved faulty dataset to '{out_path}'")
 
 
 if __name__ == "__main__":
-    run_healthy_rw_dataset(
-        out_path="healthy_rw_run.h5",
+    run_faulty_rw_dataset(
+        out_path="faulty_rw_run.h5",
         sample_rate_hz=1,
         duration_hours=12,
+        fault_time_hours=1,
         seed=42
     )

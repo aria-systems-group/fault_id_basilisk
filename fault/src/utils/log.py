@@ -32,12 +32,12 @@ def setup_logging(scSim, simTaskName, samplingTime, rwMotorTorqueObj, attError, 
     # Log each RW specific message
     rwLogs = []
     for i in range(numRW):
-        log = rwStateEffector.rwOutMsgs[i].recorder(samplingTime)
-        rwLogs.append(log)
-        scSim.AddModelToTask(simTaskName, log)
+        rwLog = rwStateEffector.rwOutMsgs[i].recorder(samplingTime)
+        scSim.AddModelToTask(simTaskName, rwLog)
+        rwLogs.append(rwLog)
 
     # Return all logs for external access
-    return snAttLog, rwLogs, attErrorLog
+    return snAttLog, rwLogs
 
 def process_filter(snAttLog, rwLogs, inertialAttFilterLog_dict, numRW):
     """
