@@ -90,7 +90,8 @@ def run_healthy_rw_dataset(
                                      attError, sNavObject, rwStateEffector, numRW)
 
     # --- Simulation duration and sampling ---
-    simTimeSec = duration_hours * 3600.0
+    # simTimeSec = duration_hours * 3600.0
+    simTimeSec = 100
     dt_sample = 1.0 / sample_rate_hz
     timeSpan = np.arange(0, simTimeSec + dt_sample, dt_sample)
 
