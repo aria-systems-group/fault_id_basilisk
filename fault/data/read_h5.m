@@ -34,6 +34,13 @@ diff_rw_wheel = max(max(rw_wheel_speed_radps2 - rw_wheel_speed_radps1))
 diff_labels = max(max(labels2 - labels1))
 
 
+% Figure
+figure(1)
+plot(time_s1, attitude_mrp1)
+
+figure(2)
+plot(time_s1, attitude_mrp2)
+
 
 
 

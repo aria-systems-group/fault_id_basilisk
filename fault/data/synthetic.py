@@ -91,7 +91,7 @@ def run_healthy_rw_dataset(
 
     # --- Simulation duration and sampling ---
     # simTimeSec = duration_hours * 3600.0
-    simTimeSec = 100
+    simTimeSec = duration_hours * 3600
     dt_sample = 1.0 / sample_rate_hz
     timeSpan = np.arange(0, simTimeSec + dt_sample, dt_sample)
 
@@ -170,6 +170,6 @@ if __name__ == "__main__":
     run_healthy_rw_dataset(
         out_path="healthy_rw_run.h5",
         sample_rate_hz=1,
-        duration_hours=12,
+        duration_hours=1,
         seed=42
     )

@@ -319,20 +319,28 @@ def run_faulty_rw_dataset(
 
 
 if __name__ == "__main__":
+
+    # Define durations (in seconds)
+    duration_healthy_sec = 0.01 * 3600
+    duration_faulty_sec = 0.99 * 3600  
+
     # --- Healthy run ---
     last_state_healthy, dataset_healthy = run_healthy_rw_dataset(
         sample_rate_hz=1,
-        duration=50,
+        duration=duration_healthy_sec,
         seed=42
     )
+    print(f"Healthy simulated'")
 
     # --- Faulty run using last healthy state ---
     last_state_faulty, dataset_faulty = run_faulty_rw_dataset(
         last_state_healthy=last_state_healthy,
         sample_rate_hz=1,
-        duration=50,
+        duration=duration_faulty_sec,
         seed=42
     )
+
+    print(f"Faulty simulated'")
 
     # --- Combine healthy + faulty datasets sequentially ---
     timestamps = np.concatenate([
