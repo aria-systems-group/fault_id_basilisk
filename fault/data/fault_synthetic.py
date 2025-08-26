@@ -24,10 +24,11 @@ from utils.log import setup_logging, process_filter
 # NEW: Healthy RW dataset generator (no faults)
 # ---------------------------
 def run_healthy_rw_dataset(
-    sample_rate_hz=1,
-    duration=50,
-    seed: int = 0
-):
+        sample_rate_hz=1,
+        duration=50,
+        seed: int = 0,
+        last_state=None
+    ):
     """
     Generates a HEALTHY dataset (no faults) for reaction wheels.
     Logs attitude, body rates, RW speeds, torques, and timestamps.
@@ -37,10 +38,27 @@ def run_healthy_rw_dataset(
     # --- Set seed for reproducibility ---
     np.random.seed(seed)
 
-    # Setup spacecraft and simulation module
+    # --- Extract last state if provided ---
+    if last_state is not None:
+        oe_init = last_state["oe"]
+        rN_init = last_state["rN"]
+        vN_init = last_state["vN"]
+        sigma_init = last_state["sigma"]
+        omega_init = last_state["omega"]
+    else:
+        oe_init = rN_init = vN_init = sigma_init = omega_init = None
+
+    # --- Setup spacecraft ---
     (scSim, scObject, simTaskName, simTimeSec, simTimeStepSec,
      simulationTime, simulationTimeStep, varRWModel, rwFactory,
-     rwStateEffector, numRW, I) = setup_spacecraft_sim(true_mode=0)
+     rwStateEffector, numRW, I) = setup_spacecraft_sim(
+         true_mode=0,               # healthy
+         oe=oe_init,                # previous orbital elements (if any)
+         rN=rN_init,                # previous position
+         vN=vN_init,                # previous velocity
+         sigma_BNInit=sigma_init,   # previous attitude MRPs
+         omega_BN_BInit=omega_init  # previous body rates
+     )
 
     # Setup navigation + control
     sNavObject, inertial3DObj, attError, mrpControl = \
@@ -320,45 +338,76 @@ def run_faulty_rw_dataset(
 
 if __name__ == "__main__":
 
-    # Define durations (in seconds)
-    duration_healthy_sec = 0.01 * 3600
-    duration_faulty_sec = 0.99 * 3600  
+    sample_rate_hz = 1  # 1 Hz
 
-    # --- Healthy run ---
-    last_state_healthy, dataset_healthy = run_healthy_rw_dataset(
-        sample_rate_hz=1,
-        duration=duration_healthy_sec,
-        seed=42
-    )
-    print(f"Healthy simulated'")
+    # --- Define sequence of runs: (type, duration_sec) ---
+    run_sequence = [
+        ("healthy", 60),
+        ("faulty", 360),
+        ("healthy", 60),
+        ("faulty", 360),
+        ("healthy", 60),
+        ("faulty", 360),
+        ("healthy", 2340)
+    ]
 
-    # --- Faulty run using last healthy state ---
-    last_state_faulty, dataset_faulty = run_faulty_rw_dataset(
-        last_state_healthy=last_state_healthy,
-        sample_rate_hz=1,
-        duration=duration_faulty_sec,
-        seed=42
-    )
+    all_timestamps = []
+    all_att_log = []
+    all_body_rate_log = []
+    all_rw_omega_log = []
+    all_rw_torque_log = []
+    all_fault_labels = []
 
-    print(f"Faulty simulated'")
+    t_offset = 0
+    last_state = None  # will store last state of previous run
 
-    # --- Combine healthy + faulty datasets sequentially ---
-    timestamps = np.concatenate([
-        dataset_healthy["timestamps"],
-        dataset_faulty["timestamps"] + dataset_healthy["timestamps"][-1] + 1  # shift time
-    ])
-    att_log = np.concatenate([dataset_healthy["att_log"], dataset_faulty["att_log"]])
-    body_rate_log = np.concatenate([dataset_healthy["body_rate_log"], dataset_faulty["body_rate_log"]])
-    rw_omega_log = np.concatenate([dataset_healthy["rw_omega_log"], dataset_faulty["rw_omega_log"]])
-    rw_torque_log = np.concatenate([dataset_healthy["rw_torque_log"], dataset_faulty["rw_torque_log"]])
+    for run_type, duration_sec in run_sequence:
+        if run_type == "healthy":
+            if last_state is None:
+                # first healthy run starts fresh
+                last_state, dataset = run_healthy_rw_dataset(
+                    sample_rate_hz=sample_rate_hz,
+                    duration=duration_sec,
+                    seed=42
+                )
+            else:
+                # subsequent healthy runs continue from last state
+                last_state, dataset = run_healthy_rw_dataset(
+                    sample_rate_hz=sample_rate_hz,
+                    duration=duration_sec,
+                    seed=42,
+                    last_state=last_state   # <-- actually passed!
+                )
+        elif run_type == "faulty":
+            # faulty runs always start from last state
+            last_state, dataset = run_faulty_rw_dataset(
+                last_state_healthy=last_state,
+                sample_rate_hz=sample_rate_hz,
+                duration=duration_sec,
+                seed=42
+            )
+        else:
+            raise ValueError(f"Unknown run type: {run_type}")
 
-    # Fault labels: healthy = 0, faulty = 1 for RW1, 0 for others
-    fault_labels = np.concatenate([
-        dataset_healthy["fault_labels"],
-        dataset_faulty["fault_labels"]
-    ])
+        # Append dataset with shifted timestamps
+        all_timestamps.append(dataset["timestamps"] + t_offset)
+        all_att_log.append(dataset["att_log"])
+        all_body_rate_log.append(dataset["body_rate_log"])
+        all_rw_omega_log.append(dataset["rw_omega_log"])
+        all_rw_torque_log.append(dataset["rw_torque_log"])
+        all_fault_labels.append(dataset["fault_labels"])
 
-    # --- Package for HDF5 ---
+        t_offset += duration_sec
+
+    # --- Concatenate all arrays ---
+    timestamps = np.concatenate(all_timestamps)
+    att_log = np.concatenate(all_att_log)
+    body_rate_log = np.concatenate(all_body_rate_log)
+    rw_omega_log = np.concatenate(all_rw_omega_log)
+    rw_torque_log = np.concatenate(all_rw_torque_log)
+    fault_labels = np.concatenate(all_fault_labels)
+
+    # --- Save HDF5 ---
     sensors = {
         "attitude_mrp": att_log,
         "body_rates_radps": body_rate_log,
@@ -366,11 +415,10 @@ if __name__ == "__main__":
         "rw_motor_torque_Nm": rw_torque_log
     }
 
-    # --- Save combined dataset ---
     os.makedirs(".", exist_ok=True)
     with h5py.File("faulty_rw_run.h5", "w") as f:
-        f.attrs["description"] = "Combined healthy + faulty reaction wheel dataset"
-        f.attrs["sample_rate_hz"] = 1
+        f.attrs["description"] = "RW dataset: each run continues from last state of previous run"
+        f.attrs["sample_rate_hz"] = sample_rate_hz
         f.attrs["duration_sec"] = timestamps[-1]
         f.create_dataset("time_s", data=timestamps)
         f.create_dataset("labels", data=fault_labels)
@@ -379,4 +427,4 @@ if __name__ == "__main__":
         for k, v in sensors.items():
             g.create_dataset(k, data=v)
 
-    print(f"[OK] Saved combined healthy + faulty dataset to 'faulty_rw_run.h5'")
+    print("[OK] Saved dataset to 'faulty_rw_continuous_sequence.h5'")

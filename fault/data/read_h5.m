@@ -27,19 +27,29 @@ rw_motor_torque_Nm2 = h5read(filename2, '/sensors/rw_motor_torque_Nm');
 rw_wheel_speed_radps2 = h5read(filename2, '/sensors/rw_wheel_speed_radps'); 
 
 % Difference
-diff_att = max(max(attitude_mrp2 - attitude_mrp1))
-diff_body = max(max(body_rates_radps2 - body_rates_radps1))
-diff_rw_motor = max(max(rw_motor_torque_Nm2 - rw_motor_torque_Nm1))
-diff_rw_wheel = max(max(rw_wheel_speed_radps2 - rw_wheel_speed_radps1))
-diff_labels = max(max(labels2 - labels1))
+% diff_att = max(max(attitude_mrp2 - attitude_mrp1));
+% diff_body = max(max(body_rates_radps2 - body_rates_radps1));
+% diff_rw_motor = max(max(rw_motor_torque_Nm2 - rw_motor_torque_Nm1));
+% diff_rw_wheel = max(max(rw_wheel_speed_radps2 - rw_wheel_speed_radps1));
+% diff_labels = max(max(labels2 - labels1));
 
+% Figures
+plot_time = 3600;
 
-% Figure
-figure(1)
-plot(time_s1, attitude_mrp1)
+% figure(1)
+% plot(time_s1(1:plot_time), rw_wheel_speed_radps1(:, 1:plot_time))
+% 
+% figure(2)
+% plot(time_s1(1:plot_time), attitude_mrp1(:, 1:plot_time))
 
-figure(2)
-plot(time_s1, attitude_mrp2)
+figure
+plot(time_s2(1:plot_time), rw_wheel_speed_radps2(:, 1:plot_time))
+
+figure
+plot(time_s2(1:plot_time), attitude_mrp2(:, 1:plot_time))
+hold on
+plot(time_s2(1:plot_time), double(labels2(1, 1:plot_time)), 'r', 'LineWidth', 2)
+hold off
 
 
 

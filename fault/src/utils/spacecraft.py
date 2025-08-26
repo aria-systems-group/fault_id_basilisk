@@ -101,13 +101,10 @@ def setup_spacecraft_sim(
     # --- Inject RW fault based on true_mode ---
     if true_mode == 1:
         rw_List[0].u_max = rw_List[0].u_max*0.01
-        print("RW1 uMax:", rw_List[0].u_max)
     elif true_mode == 2:
         rw_List[1].u_max = rw_List[1].u_max*0.01
-        print("RW2 uMax:", rw_List[1].u_max)
     elif true_mode == 3:
         rw_List[2].u_max = rw_List[2].u_max*0.01
-        print("RW3 uMax:", rw_List[2].u_max)
 
     numRW = rwFactory.getNumOfDevices()
 
