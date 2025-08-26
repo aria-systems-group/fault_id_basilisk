@@ -94,18 +94,20 @@ def setup_spacecraft_sim(
             Omega=omega_init,
             RWModel=varRWModel
         )
+
+        # rw_List.append(rw)
         rw_List.append(rw)
 
     # --- Inject RW fault based on true_mode ---
     if true_mode == 1:
-        rw_List[0].Js *= 0.5
+        rw_List[0].u_max = rw_List[0].u_max*0.01
+        print("RW1 uMax:", rw_List[0].u_max)
     elif true_mode == 2:
-        rw_List[1].Js *= 0.5
+        rw_List[1].u_max = rw_List[1].u_max*0.01
+        print("RW2 uMax:", rw_List[1].u_max)
     elif true_mode == 3:
-        rw_List[2].Js *= 0.5
-    elif true_mode == -1:
-        for rw in rw_List:
-            rw.Js *= 0.5
+        rw_List[2].u_max = rw_List[2].u_max*0.01
+        print("RW3 uMax:", rw_List[2].u_max)
 
     numRW = rwFactory.getNumOfDevices()
 
@@ -114,6 +116,7 @@ def setup_spacecraft_sim(
     rwStateEffector.ModelTag = "RW_cluster"
     rwFactory.addToSpacecraft(scObject.ModelTag, rwStateEffector, scObject)
     scSim.AddModelToTask(simTaskName, rwStateEffector, 2)
+
 
     return (
         scSim,
