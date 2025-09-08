@@ -2,7 +2,7 @@
 clc; clear; close;
 
 filename1 = 'healthy_rw_run.h5';
-filename2 = 'faulty_rw_run.h5';
+filename2 = '11_faulty_power3.h5';
 
 % Display the contents of the file
 h5disp(filename1);
@@ -22,9 +22,12 @@ rw_motor_torque_Nm1 = h5read(filename1, '/sensors/rw_motor_torque_Nm');
 rw_wheel_speed_radps1 = h5read(filename1, '/sensors/rw_wheel_speed_radps'); 
 
 attitude_mrp2       = h5read(filename2, '/sensors/attitude_mrp');
+star_tracker_mrp2   = h5read(filename2, '/sensors/star_tracker_mrp');
+sun_sensor2         = h5read(filename2, '/sensors/sun_sensor');
+magnetometer2       = h5read(filename2, '/sensors/magnetometer');
 body_rates_radps2   = h5read(filename2, '/sensors/body_rates_radps');
-rw_motor_torque_Nm2 = h5read(filename2, '/sensors/rw_motor_torque_Nm');
 rw_wheel_speed_radps2 = h5read(filename2, '/sensors/rw_wheel_speed_radps'); 
+rw_motor_torque_Nm2   = h5read(filename2, '/sensors/rw_motor_torque_Nm');
 
 % Difference
 % diff_att = max(max(attitude_mrp2 - attitude_mrp1));

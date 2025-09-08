@@ -100,11 +100,51 @@ def setup_spacecraft_sim(
 
     # --- Inject RW fault based on true_mode ---
     if true_mode == 1:
-        rw_List[0].u_max = rw_List[0].u_max*0.01
+        # RW1 degraded
+        rw_List[0].u_max *= 0.01
     elif true_mode == 2:
-        rw_List[1].u_max = rw_List[1].u_max*0.01
+        # RW2 degraded
+        rw_List[1].u_max *= 0.01
     elif true_mode == 3:
-        rw_List[2].u_max = rw_List[2].u_max*0.01
+        # RW3 degraded
+        rw_List[2].u_max *= 0.01
+    elif true_mode == 4:
+        # RW1 stuck (no torque)
+        rw_List[0].u_max *= 0.0001
+    elif true_mode == 5:
+        # RW2 stuck (no torque)
+        rw_List[1].u_max *= 0.0001
+    elif true_mode == 6:
+        # RW3 stuck (no torque)
+        rw_List[2].u_max *= 0.0001
+    elif true_mode == 7:
+        # RW1 + RW2 fully degraded
+        rw_List[0].u_max *= 0.0001
+        rw_List[1].u_max *= 0.0001
+    elif true_mode == 8:
+        # RW2 + RW3 fully degraded
+        rw_List[1].u_max *= 0.0001
+        rw_List[2].u_max *= 0.0001
+    elif true_mode == 9:
+        # Reduced power generation efficiency
+        rw_List[0].u_max *= 0.2
+        rw_List[1].u_max *= 0.2
+        rw_List[2].u_max *= 0.2
+    elif true_mode == 10:
+        # Reduced power generation efficiency
+        rw_List[0].u_max *= 0.1
+        rw_List[1].u_max *= 0.1
+        rw_List[2].u_max *= 0.1
+    elif true_mode == 11:
+        # Reduced power generation efficiency
+        rw_List[0].u_max *= 0.05
+        rw_List[1].u_max *= 0.05
+        rw_List[2].u_max *= 0.05
+    elif true_mode == 12:
+        # Reduced power generation efficiency
+        rw_List[0].u_max *= 0.01
+        rw_List[1].u_max *= 0.01
+        rw_List[2].u_max *= 0.01
 
     numRW = rwFactory.getNumOfDevices()
 

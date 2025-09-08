@@ -8,7 +8,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 import matplotlib.pyplot as plt  # kept for compatibility with existing imports
 from Basilisk import __path__
 from Basilisk.architecture import messaging
-from Basilisk.utilities import macros, unitTestSupport, simIncludeRW, orbitalMotion, simIncludeGravBody
+from Basilisk.utilities import macros, unitTestSupport, simIncludeRW, orbitalMotion, simIncludeGravBody, RigidBodyKinematics
 from Basilisk.fswAlgorithms import inertialUKF
 
 bskPath = __path__[0]
@@ -118,15 +118,17 @@ def run_healthy_rw_dataset(
     # Initialize simulation
     scSim.InitializeSimulation()
 
-    # Pre-allocate logs
-    att_log, body_rate_log, rw_omega_log, rw_torque_log = [], [], [], []
+    # --- Pre-allocate logs ---
+    att_log, star_tracker_log = [], []
+    body_rate_log, rw_omega_log, rw_torque_log = [], [], []
+    sun_log, mag_log = [], []
 
     # --- Run Simulation loop ---
     for t in timeSpan[1:]:
         scSim.ConfigureStopTime(macros.sec2nano(t))
         scSim.ExecuteSimulation()
 
-        # Write noisy star tracker measurement
+        # --- Star Tracker measurement (noisy) ---
         if snAttLog.sigma_BN.shape[0] > 0:
             true_att = snAttLog.sigma_BN[-1, :]
             noisy_att = true_att + np.random.normal(0, np.sqrt(st_cov), 3)
@@ -134,8 +136,20 @@ def run_healthy_rw_dataset(
             st_1_data.timeTag = int(t * 1E9)
             st_1_data.MRP_BdyInrtl = noisy_att
             attitude_measurement_msg.write(st_1_data, int(t * 1E9))
+            star_tracker_log.append(noisy_att)
 
-        # Logs
+        # --- Sun Sensor measurement (noisy) ---
+        sun_vec_inertial = np.array([1.0, 0.0, 0.0])
+        BN = RigidBodyKinematics.MRP2C(snAttLog.sigma_BN[-1, :])
+        sun_body_noisy = BN @ sun_vec_inertial + np.random.normal(0, 0.01, 3)
+        sun_log.append(sun_body_noisy)
+
+        # --- Magnetometer measurement (noisy) ---
+        B_inertial = np.array([1e-5, 0.0, 0.0])
+        B_body_noisy = BN @ B_inertial + np.random.normal(0, 1e-6, 3)
+        mag_log.append(B_body_noisy)
+
+        # --- Log true spacecraft states ---
         att_log.append(snAttLog.sigma_BN[-1, :])
         body_rate_log.append(snAttLog.omega_BN_B[-1, :])
         rw_omega_log.append([rw.Omega for rw in rwFactory.rwList.values()])
@@ -148,20 +162,10 @@ def run_healthy_rw_dataset(
     timestamps = timeSpan[1:]
     fault_labels = np.zeros((len(timestamps), numRW), dtype=np.uint8)
 
-    # Get gravitational parameter
-    gravFactory = simIncludeGravBody.gravBodyFactory()
-    earth = gravFactory.createEarth()
-    earth.isCentralBody = True
-    mu = earth.mu
-
-    # Use initial hub position/velocity as reference (updated states are in logs)
     rN = np.array(scObject.hub.r_CN_NInit).flatten()
     vN = np.array(scObject.hub.v_CN_NInit).flatten()
-
-    # Compute orbital elements from rN/vN
+    mu = simIncludeGravBody.gravBodyFactory().createEarth().mu
     oe = orbitalMotion.rv2elem_parab(mu, rN, vN)
-
-    # Last attitude and angular velocity from logs
     sigma = snAttLog.sigma_BN[-1, :]
     omega = snAttLog.omega_BN_B[-1, :]
 
@@ -176,17 +180,20 @@ def run_healthy_rw_dataset(
     dataset_healthy = {
         "timestamps": timestamps,
         "att_log": np.array(att_log),
+        "star_tracker_log": np.array(star_tracker_log),
         "body_rate_log": np.array(body_rate_log),
         "rw_omega_log": np.array(rw_omega_log),
         "rw_torque_log": np.array(rw_torque_log),
+        "sun_sensor_log": np.array(sun_log),
+        "magnetometer_log": np.array(mag_log),
         "fault_labels": fault_labels
     }
 
-    return last_state_healthy, dataset_healthy 
-
+    return last_state_healthy, dataset_healthy
 
 
 def run_faulty_rw_dataset(
+    true_mode,
     last_state_healthy,
     sample_rate_hz=1,
     duration=50,
@@ -213,7 +220,7 @@ def run_faulty_rw_dataset(
     (scSim, scObject, simTaskName, simTimeSec, simTimeStepSec,
      simulationTime, simulationTimeStep, varRWModel, rwFactory,
      rwStateEffector, numRW, I) = setup_spacecraft_sim(
-         true_mode=1,   # fault mode
+         true_mode=true_mode,   # fault mode
          oe=oe_h,       # Classical orbital elements
          rN=rN_h,       # Initial position vector (m)
          vN=vN_h,       # Initial velocity vector (m/s)
@@ -279,14 +286,16 @@ def run_faulty_rw_dataset(
     scSim.InitializeSimulation()
 
     # --- Pre-allocate logs ---
-    att_log, body_rate_log, rw_omega_log, rw_torque_log = [], [], [], []
+    att_log, star_tracker_log = [], []
+    body_rate_log, rw_omega_log, rw_torque_log = [], [], []
+    sun_log, mag_log = [], []
 
     # --- Simulation loop ---
     for t in timeSpan[1:]:
         scSim.ConfigureStopTime(macros.sec2nano(t))
         scSim.ExecuteSimulation()
 
-        # Write noisy star tracker measurement
+        # --- Star Tracker measurement (noisy) ---
         if snAttLog.sigma_BN.shape[0] > 0:
             true_att = snAttLog.sigma_BN[-1, :]
             noisy_att = true_att + np.random.normal(0, np.sqrt(st_cov), 3)
@@ -294,9 +303,21 @@ def run_faulty_rw_dataset(
             st_1_data.timeTag = int(t * 1E9)
             st_1_data.MRP_BdyInrtl = noisy_att
             attitude_measurement_msg.write(st_1_data, int(t * 1E9))
+            star_tracker_log.append(noisy_att)  # log the noisy measurement
 
-        # Log states
-        att_log.append(snAttLog.sigma_BN[-1, :])
+        # --- Sun Sensor measurement (noisy) ---
+        sun_vec_inertial = np.array([1.0, 0.0, 0.0])  # example Sun vector
+        BN = RigidBodyKinematics.MRP2C(snAttLog.sigma_BN[-1, :])
+        sun_body_noisy = BN @ sun_vec_inertial + np.random.normal(0, 0.01, 3)  # rad noise
+        sun_log.append(sun_body_noisy)
+
+        # --- Magnetometer measurement (noisy) ---
+        B_inertial = np.array([1e-5, 0.0, 0.0])  # example Earth's magnetic field
+        B_body_noisy = BN @ B_inertial + np.random.normal(0, 1e-6, 3)  # Tesla noise
+        mag_log.append(B_body_noisy)
+
+        # --- Log true spacecraft states ---
+        att_log.append(snAttLog.sigma_BN[-1, :])         # true attitude
         body_rate_log.append(snAttLog.omega_BN_B[-1, :])
         rw_omega_log.append([rw.Omega for rw in rwFactory.rwList.values()])
         rw_torque_log.append([
@@ -306,9 +327,8 @@ def run_faulty_rw_dataset(
 
     # --- Package results ---
     timestamps = timeSpan[1:]
-    fault_labels = np.ones((len(timestamps), numRW), dtype=np.uint8)  # all 1s since fault is active
+    fault_labels = np.ones((len(timestamps), numRW), dtype=np.uint8)  # all 1s for fault
 
-    # Last spacecraft state
     rN = np.array(scObject.hub.r_CN_NInit).flatten()
     vN = np.array(scObject.hub.v_CN_NInit).flatten()
     mu = simIncludeGravBody.gravBodyFactory().createEarth().mu
@@ -326,14 +346,18 @@ def run_faulty_rw_dataset(
 
     dataset_faulty = {
         "timestamps": timestamps,
-        "att_log": np.array(att_log),
+        "att_log": np.array(att_log),                # true attitude
+        "star_tracker_log": np.array(star_tracker_log),  # noisy star tracker
         "body_rate_log": np.array(body_rate_log),
         "rw_omega_log": np.array(rw_omega_log),
         "rw_torque_log": np.array(rw_torque_log),
+        "sun_sensor_log": np.array(sun_log),
+        "magnetometer_log": np.array(mag_log),
         "fault_labels": fault_labels
     }
 
     return last_state_faulty, dataset_faulty
+
 
 
 if __name__ == "__main__":
@@ -341,18 +365,21 @@ if __name__ == "__main__":
     sample_rate_hz = 1  # 1 Hz
 
     # --- Define sequence of runs: (type, duration_sec) ---
+    true_mode = 12
     run_sequence = [
-        ("healthy", 60),
-        ("faulty", 360),
-        ("healthy", 60),
-        ("faulty", 360),
-        ("healthy", 60),
-        ("faulty", 360),
-        ("healthy", 2340)
+        ("healthy", 39),
+        ("faulty", 1190),
+        ("healthy", 61),
+        ("faulty", 1087),
+        ("healthy", 55),
+        ("faulty", 1168),
     ]
 
     all_timestamps = []
     all_att_log = []
+    all_star_tracker_log = []
+    all_sun_log = []
+    all_mag_log = []
     all_body_rate_log = []
     all_rw_omega_log = []
     all_rw_torque_log = []
@@ -363,24 +390,19 @@ if __name__ == "__main__":
 
     for run_type, duration_sec in run_sequence:
         if run_type == "healthy":
-            if last_state is None:
-                # first healthy run starts fresh
-                last_state, dataset = run_healthy_rw_dataset(
-                    sample_rate_hz=sample_rate_hz,
-                    duration=duration_sec,
-                    seed=42
-                )
-            else:
-                # subsequent healthy runs continue from last state
-                last_state, dataset = run_healthy_rw_dataset(
-                    sample_rate_hz=sample_rate_hz,
-                    duration=duration_sec,
-                    seed=42,
-                    last_state=last_state   # <-- actually passed!
-                )
+            last_state, dataset = run_healthy_rw_dataset(
+                sample_rate_hz=sample_rate_hz,
+                duration=duration_sec,
+                seed=42,
+                last_state=last_state
+            ) if last_state is not None else run_healthy_rw_dataset(
+                sample_rate_hz=sample_rate_hz,
+                duration=duration_sec,
+                seed=42
+            )
         elif run_type == "faulty":
-            # faulty runs always start from last state
             last_state, dataset = run_faulty_rw_dataset(
+                true_mode,
                 last_state_healthy=last_state,
                 sample_rate_hz=sample_rate_hz,
                 duration=duration_sec,
@@ -392,6 +414,9 @@ if __name__ == "__main__":
         # Append dataset with shifted timestamps
         all_timestamps.append(dataset["timestamps"] + t_offset)
         all_att_log.append(dataset["att_log"])
+        all_star_tracker_log.append(dataset["star_tracker_log"])
+        all_sun_log.append(dataset["sun_sensor_log"])
+        all_mag_log.append(dataset["magnetometer_log"])
         all_body_rate_log.append(dataset["body_rate_log"])
         all_rw_omega_log.append(dataset["rw_omega_log"])
         all_rw_torque_log.append(dataset["rw_torque_log"])
@@ -402,6 +427,9 @@ if __name__ == "__main__":
     # --- Concatenate all arrays ---
     timestamps = np.concatenate(all_timestamps)
     att_log = np.concatenate(all_att_log)
+    star_tracker_log = np.concatenate(all_star_tracker_log)
+    sun_log = np.concatenate(all_sun_log)
+    mag_log = np.concatenate(all_mag_log)
     body_rate_log = np.concatenate(all_body_rate_log)
     rw_omega_log = np.concatenate(all_rw_omega_log)
     rw_torque_log = np.concatenate(all_rw_torque_log)
@@ -410,14 +438,17 @@ if __name__ == "__main__":
     # --- Save HDF5 ---
     sensors = {
         "attitude_mrp": att_log,
+        "star_tracker_mrp": star_tracker_log,
+        "sun_sensor": sun_log,
+        "magnetometer": mag_log,
         "body_rates_radps": body_rate_log,
         "rw_wheel_speed_radps": rw_omega_log,
         "rw_motor_torque_Nm": rw_torque_log
     }
 
     os.makedirs(".", exist_ok=True)
-    with h5py.File("faulty_rw_run.h5", "w") as f:
-        f.attrs["description"] = "RW dataset: each run continues from last state of previous run"
+    with h5py.File("12_faulty_power4.h5", "w") as f:
+        f.attrs["description"] = "Power dataset: power reduced to 1%"
         f.attrs["sample_rate_hz"] = sample_rate_hz
         f.attrs["duration_sec"] = timestamps[-1]
         f.create_dataset("time_s", data=timestamps)
@@ -427,4 +458,4 @@ if __name__ == "__main__":
         for k, v in sensors.items():
             g.create_dataset(k, data=v)
 
-    print("[OK] Saved dataset to 'faulty_rw_continuous_sequence.h5'")
+    print("[OK] Saved dataset")
